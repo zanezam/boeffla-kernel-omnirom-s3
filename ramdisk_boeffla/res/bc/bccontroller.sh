@@ -9,7 +9,7 @@
 # ********************************
 
 # kernel specification (hardware; type; target; url)
-KERNEL_SPECS="i9300;cm;cm11;http://boeffla.df-kunde.de/sgs3/boeffla-kernel-omni/"
+KERNEL_SPECS="i9300;cm;omni11;http://boeffla.df-kunde.de/sgs3/boeffla-kernel-omni/"
 
 # path to kernel libraries
 #LIBPATH="/lib/modules"				# Samsung
