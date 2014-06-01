@@ -186,13 +186,10 @@ void sync_mm_rss(struct task_struct *task, struct mm_struct *mm)
 	__sync_task_rss_stat(task, mm);
 }
 #else /* SPLIT_RSS_COUNTING */
-#ifdef CONFIG_LOWMEM_CHECK
-#define inc_mm_counter_fast(mm, member, page) inc_mm_counter(mm, member, page)
-#define dec_mm_counter_fast(mm, member, page) dec_mm_counter(mm, member, page)
-#else
+
 #define inc_mm_counter_fast(mm, member) inc_mm_counter(mm, member)
 #define dec_mm_counter_fast(mm, member) dec_mm_counter(mm, member)
-#endif
+
 static void check_sync_rss_stat(struct task_struct *task)
 {
 }
@@ -211,10 +208,14 @@ static int tlb_next_batch(struct mmu_gather *tlb)
 		return 1;
 	}
 
+	if (tlb->batch_count == MAX_GATHER_BATCH_COUNT)
+		return 0;
+
 	batch = (void *)__get_free_pages(GFP_NOWAIT | __GFP_NOWARN, 0);
 	if (!batch)
 		return 0;
 
+	tlb->batch_count++;
 	batch->next = NULL;
 	batch->nr   = 0;
 	batch->max  = MAX_GATHER_BATCH;
@@ -241,6 +242,7 @@ void tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm, bool fullmm)
 	tlb->local.nr   = 0;
 	tlb->local.max  = ARRAY_SIZE(tlb->__pages);
 	tlb->active     = &tlb->local;
+	tlb->batch_count = 0;
 
 #ifdef CONFIG_HAVE_RCU_TABLE_FREE
 	tlb->batch = NULL;
@@ -917,30 +919,12 @@ copy_one_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 
 	page = vm_normal_page(vma, addr, pte);
 	if (page) {
-	#ifdef CONFIG_LOWMEM_CHECK
-		int type;
-	#endif
 		get_page(page);
 		page_dup_rmap(page);
 		if (PageAnon(page))
-		#ifdef CONFIG_LOWMEM_CHECK
-			type = MM_ANONPAGES;
-		#else
 			rss[MM_ANONPAGES]++;
-		#endif
 		else
-		#ifdef CONFIG_LOWMEM_CHECK
-			type = MM_FILEPAGES;
-		#else
 			rss[MM_FILEPAGES]++;
-		#endif
-	#ifdef CONFIG_LOWMEM_CHECK
-		rss[type]++;
-		if (is_lowmem_page(page)) {
-			type += LOWMEM_COUNTER;
-			rss[type]++;
-		}
-	#endif
 	}
 
 out_set_pte:
@@ -1136,9 +1120,6 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	struct mm_struct *mm = tlb->mm;
 	int force_flush = 0;
 	int rss[NR_MM_COUNTERS];
-#ifdef CONFIG_LOWMEM_CHECK
-	int type;
-#endif
 	spinlock_t *ptl;
 	pte_t *start_pte;
 	pte_t *pte;
@@ -1187,30 +1168,15 @@ again:
 				set_pte_at(mm, addr, pte,
 					   pgoff_to_pte(page->index));
 			if (PageAnon(page))
-			#ifdef CONFIG_LOWMEM_CHECK
-				type = MM_ANONPAGES;
-			#else
 				rss[MM_ANONPAGES]--;
-			#endif
 			else {
 				if (pte_dirty(ptent))
 					set_page_dirty(page);
 				if (pte_young(ptent) &&
 				    likely(!VM_SequentialReadHint(vma)))
 					mark_page_accessed(page);
-			#ifdef CONFIG_LOWMEM_CHECK
-				type = MM_FILEPAGES;
-			#else
 				rss[MM_FILEPAGES]--;
-			#endif
 			}
-		#ifdef CONFIG_LOWMEM_CHECK
-			rss[type]--;
-			if (is_lowmem_page(page)) {
-				type += LOWMEM_COUNTER;
-				rss[type]--;
-			}
-		#endif
 			page_remove_rmap(page);
 			if (unlikely(page_mapcount(page) < 0))
 				print_bad_pte(vma, addr, ptent, page);
@@ -2118,11 +2084,7 @@ static int insert_page(struct vm_area_struct *vma, unsigned long addr,
 
 	/* Ok, finally just insert the thing.. */
 	get_page(page);
-#ifdef CONFIG_LOWMEM_CHECK
-	inc_mm_counter_fast(mm, MM_FILEPAGES, page);
-#else
 	inc_mm_counter_fast(mm, MM_FILEPAGES);
-#endif
 	page_add_file_rmap(page);
 	set_pte_at(mm, addr, pte, mk_pte(page, prot));
 
@@ -2425,8 +2387,7 @@ EXPORT_SYMBOL(remap_pfn_range);
  * NOTE! Some drivers might want to tweak vma->vm_page_prot first to get
  * whatever write-combining details or similar.
  */
-int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start,
-							unsigned long len)
+int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len)
 {
 	unsigned long vm_len, pfn, pages;
 
@@ -2456,8 +2417,7 @@ int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start,
 		return -EINVAL;
 
 	/* Ok, let it rip */
-	return io_remap_pfn_range(vma, vma->vm_start, pfn, vm_len,
-							vma->vm_page_prot);
+	return io_remap_pfn_range(vma, vma->vm_start, pfn, vm_len, vma->vm_page_prot);
 }
 EXPORT_SYMBOL(vm_iomap_memory);
 
@@ -2844,20 +2804,11 @@ gotten:
 	if (likely(pte_same(*page_table, orig_pte))) {
 		if (old_page) {
 			if (!PageAnon(old_page)) {
-			#ifdef CONFIG_LOWMEM_CHECK
-				dec_mm_counter_fast(mm, MM_FILEPAGES, old_page);
-				inc_mm_counter_fast(mm, MM_ANONPAGES, new_page);
-			#else
 				dec_mm_counter_fast(mm, MM_FILEPAGES);
 				inc_mm_counter_fast(mm, MM_ANONPAGES);
-			#endif
 			}
 		} else
-		#ifdef CONFIG_LOWMEM_CHECK
-			inc_mm_counter_fast(mm, MM_ANONPAGES, new_page);
-		#else
 			inc_mm_counter_fast(mm, MM_ANONPAGES);
-		#endif
 		flush_cache_page(vma, address, pte_pfn(orig_pte));
 		entry = mk_pte(new_page, vma->vm_page_prot);
 		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
@@ -3172,13 +3123,9 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	 * in page->private. In this case, a record in swap_cgroup  is silently
 	 * discarded at swap_free().
 	 */
-#ifdef CONFIG_LOWMEM_CHECK
-	inc_mm_counter_fast(mm, MM_ANONPAGES, page);
-	dec_mm_counter_fast(mm, MM_SWAPENTS, page);
-#else
+
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
 	dec_mm_counter_fast(mm, MM_SWAPENTS);
-#endif
 	pte = mk_pte(page, vma->vm_page_prot);
 	if ((flags & FAULT_FLAG_WRITE) && reuse_swap_page(page)) {
 		pte = maybe_mkwrite(pte_mkdirty(pte), vma);
@@ -3322,11 +3269,8 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	page_table = pte_offset_map_lock(mm, pmd, address, &ptl);
 	if (!pte_none(*page_table))
 		goto release;
-#ifdef CONFIG_LOWMEM_CHECK
-	inc_mm_counter_fast(mm, MM_ANONPAGES, page);
-#else
+
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
-#endif
 	page_add_new_anon_rmap(page, vma, address);
 setpte:
 	set_pte_at(mm, address, page_table, entry);
@@ -3483,18 +3427,10 @@ static int __do_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		if (flags & FAULT_FLAG_WRITE)
 			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
 		if (anon) {
-		#ifdef CONFIG_LOWMEM_CHECK
-			inc_mm_counter_fast(mm, MM_ANONPAGES, page);
-		#else
 			inc_mm_counter_fast(mm, MM_ANONPAGES);
-		#endif
 			page_add_new_anon_rmap(page, vma, address);
 		} else {
-		#ifdef CONFIG_LOWMEM_CHECK
-			inc_mm_counter_fast(mm, MM_FILEPAGES, page);
-		#else
 			inc_mm_counter_fast(mm, MM_FILEPAGES);
-		#endif
 			page_add_file_rmap(page);
 			if (flags & FAULT_FLAG_WRITE) {
 				dirty_page = page;
@@ -3684,6 +3620,7 @@ int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		return hugetlb_fault(mm, vma, address, flags);
 
+retry:
 	pgd = pgd_offset(mm, address);
 	pud = pud_alloc(mm, pgd, address);
 	if (!pud)
@@ -3697,13 +3634,24 @@ int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 							  pmd, flags);
 	} else {
 		pmd_t orig_pmd = *pmd;
+		int ret;
+
 		barrier();
 		if (pmd_trans_huge(orig_pmd)) {
 			if (flags & FAULT_FLAG_WRITE &&
 			    !pmd_write(orig_pmd) &&
-			    !pmd_trans_splitting(orig_pmd))
-				return do_huge_pmd_wp_page(mm, vma, address,
-							   pmd, orig_pmd);
+			    !pmd_trans_splitting(orig_pmd)) {
+				ret = do_huge_pmd_wp_page(mm, vma, address, pmd,
+							  orig_pmd);
+				/*
+				 * If COW results in an oom, the huge pmd will
+				 * have been split, so retry the fault on the
+				 * pte for a smaller charge.
+				 */
+				if (unlikely(ret & VM_FAULT_OOM))
+					goto retry;
+				return ret;
+			}
 			return 0;
 		}
 	}

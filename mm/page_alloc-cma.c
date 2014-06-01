@@ -1156,7 +1156,7 @@ static struct page *__rmqueue_cma(struct zone *zone, unsigned int order,
 
 	if (migratetype == MIGRATE_MOVABLE && !zone->cma_alloc)
 		page = __rmqueue_smallest(zone, order, MIGRATE_CMA);
-	if (!page)
+	else
 retry_reserve :
 		page = __rmqueue_smallest(zone, order, migratetype);
 
@@ -2567,6 +2567,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 	struct zone *preferred_zone;
 	struct page *page;
 	int migratetype = allocflags_to_migratetype(gfp_mask);
+	unsigned int cpuset_mems_cookie;
 
 	gfp_mask &= gfp_allowed_mask;
 
@@ -2585,15 +2586,14 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 	if (unlikely(!zonelist->_zonerefs->zone))
 		return NULL;
 
-	get_mems_allowed();
+ retry_cpuset:
+	cpuset_mems_cookie = get_mems_allowed();
 	/* The preferred zone is used for statistics later */
 	first_zones_zonelist(zonelist, high_zoneidx,
 				nodemask ? : &cpuset_current_mems_allowed,
 				&preferred_zone);
-	if (!preferred_zone) {
-		put_mems_allowed();
-		return NULL;
-	}
+	if (!preferred_zone)
+	  goto out;
 
 	/* First allocation attempt */
 	page = get_page_from_freelist(gfp_mask|__GFP_HARDWALL, nodemask, order,
@@ -2603,9 +2603,18 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 		page = __alloc_pages_slowpath(gfp_mask, order,
 				zonelist, high_zoneidx, nodemask,
 				preferred_zone, migratetype);
-	put_mems_allowed();
-
 	trace_mm_page_alloc(page, order, gfp_mask, migratetype);
+
+out:
+	/*
+	 * When updating a task's mems_allowed, it is possible to race with
+	 * parallel threads in such a way that an allocation can fail while
+	 * the mask is being updated. If a page allocation is about to fail,
+	 * check if the cpuset changed during allocation and if so, retry.
+	 */
+	if (unlikely(!put_mems_allowed(cpuset_mems_cookie) && !page))
+		goto retry_cpuset;
+
 	return page;
 }
 EXPORT_SYMBOL(__alloc_pages_nodemask);
@@ -2826,13 +2835,15 @@ void si_meminfo_node(struct sysinfo *val, int nid)
 bool skip_free_areas_node(unsigned int flags, int nid)
 {
 	bool ret = false;
+	unsigned int cpuset_mems_cookie;
 
 	if (!(flags & SHOW_MEM_FILTER_NODES))
 		goto out;
 
-	get_mems_allowed();
-	ret = !node_isset(nid, cpuset_current_mems_allowed);
-	put_mems_allowed();
+	do {
+		cpuset_mems_cookie = get_mems_allowed();
+		ret = !node_isset(nid, cpuset_current_mems_allowed);
+	} while (!put_mems_allowed(cpuset_mems_cookie));
 out:
 	return ret;
 }
@@ -5324,7 +5335,6 @@ static int page_alloc_cpu_notify(struct notifier_block *self,
 	int cpu = (unsigned long)hcpu;
 
 	if (action == CPU_DEAD || action == CPU_DEAD_FROZEN) {
-		lru_add_drain_cpu(cpu);
 		drain_pages(cpu);
 
 		/*
@@ -5523,7 +5533,6 @@ void setup_per_zone_wmarks(void)
  */
 static void __meminit calculate_zone_inactive_ratio(struct zone *zone)
 {
-#ifndef CONFIG_ZSWAP
 	unsigned int gb, ratio;
 
 	/* Zone size in gigabytes */
@@ -5534,9 +5543,6 @@ static void __meminit calculate_zone_inactive_ratio(struct zone *zone)
 		ratio = 1;
 
 	zone->inactive_ratio = ratio;
-#else
-	zone->inactive_ratio = 1;
-#endif
 }
 
 static void __meminit setup_per_zone_inactive_ratio(void)
@@ -6191,6 +6197,7 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 		goto done;
 	}
 
+	drain_all_pages();
 	zone->cma_alloc = 1;
 
 migrate:
@@ -6219,23 +6226,22 @@ migrate:
 	 * isolated thus they won't get removed from buddy.
 	 */
 
-	lru_add_drain_all();
-	drain_all_pages();
-
-	order = 0;
 	outer_start = start;
-	while (!PageBuddy(pfn_to_page(outer_start))) {
-		if (++order >= MAX_ORDER) {
-			ret = -EBUSY;
-			goto done;
+	for (order = 0; order < MAX_ORDER; ++order) {
+		unsigned long pfn = start & (~0UL << order);
+		struct page *page = pfn_to_page(pfn);
+
+		if (PageBuddy(page)) {
+			if (page_order(page) >= order)
+				outer_start = pfn;
+			break;
 		}
-		outer_start &= ~0UL << order;
 	}
 
 	/* Make sure the range is really isolated. */
 	if (test_pages_isolated(outer_start, end)) {
-		pr_warn("alloc_contig_range test_pages_isolated(%lx, %lx) failed\n",
-			outer_start, end);
+		printk(KERN_ERR "%s: test_pages_isolated(%lx, %lx) failed\n",
+					__func__, outer_start, end);
 		ret = -EBUSY;
 		goto done;
 	}
@@ -6250,6 +6256,8 @@ migrate:
 	outer_end = isolate_freepages_range(outer_start, end, true);
 	if (!outer_end) {
 		ret = -EBUSY;
+		printk(KERN_ERR "%s : isolate_freepages_range failed %lu\n",
+				 __func__, outer_end);
 		goto done;
 	}
 
@@ -6260,7 +6268,7 @@ migrate:
 		free_contig_range(end, outer_end - end);
 
 done:
-	if ((ret == -EBUSY || ret == -EAGAIN) && retry++ < 10) {
+	if ((ret == -EBUSY || ret == -EAGAIN) && retry++ < 5) {
 		unsigned long count, cf;
 		/* FIXME kmpark: temporaily drop the cma free pages */
 		count = zone_page_state(zone, NR_FREE_CMA_PAGES);

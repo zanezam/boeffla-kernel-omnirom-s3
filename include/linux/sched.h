@@ -132,10 +132,6 @@ extern void get_avenrun(unsigned long *loads, unsigned long offset, int shift);
 	load += n*(FIXED_1-exp); \
 	load >>= FSHIFT;
 
-#ifdef CONFIG_ZRAM_FOR_ANDROID
-extern unsigned long this_cpu_loadx(int i);
-#endif /* CONFIG_ZRAM_FOR_ANDROID */
-
 extern unsigned long total_forks;
 extern int nr_threads;
 DECLARE_PER_CPU(unsigned long, process_counts);
