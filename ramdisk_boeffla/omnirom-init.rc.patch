@@ -1,0 +1,37 @@
+From 95a571375fd7c94ffb3bddd670f3efd7a96b7586 Mon Sep 17 00:00:00 2001
+From: andip71 <andreasp@gmx.de>
+Date: Wed, 18 Dec 2013 09:11:46 +0100
+Subject: [PATCH] 2
+
+---
+ init.rc | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/init.rc b/init.rc
+index 029cad1..31427e0 100755
+--- a/init.rc
++++ b/init.rc
+@@ -266,6 +266,9 @@ on post-fs-data
+     # Include extra init file with omni extras
+     import /init.omni.rc
+ 
++    # Include superuser daemon support (for SlimKat)
++    import /init.superuser.rc
++
+ on boot
+ # basic network init
+     ifup lo
+@@ -567,3 +570,10 @@ service mdnsd /system/bin/mdnsd
+     socket mdnsd stream 0660 mdnsr inet
+     disabled
+     oneshot
++
++# Call Boeffla-Kernel init script
++service boeffla-init /sbin/boeffla-init.sh
++    class main
++    user root
++    group root
++    oneshot
+-- 
+1.8.1.2
+
