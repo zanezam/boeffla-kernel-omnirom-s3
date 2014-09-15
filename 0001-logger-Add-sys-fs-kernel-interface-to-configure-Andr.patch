@@ -1,0 +1,205 @@
+From d12548edb1f539654472c04e7cd4bb23d2d3dfad Mon Sep 17 00:00:00 2001
+From: andip71 <andreasp@gmx.de>
+Date: Sun, 21 Apr 2013 18:53:57 +0200
+Subject: [PATCH] logger: Add sys fs kernel interface to configure Android
+ logger
+
+- now logging can be switched on and off via /sys/kernel/logger_mode/logger_mode interface
+- default is 1 (on)
+---
+ drivers/staging/android/Makefile           |   2 +-
+ drivers/staging/android/logger.c           |  13 ++++
+ drivers/staging/android/logger_interface.c | 109 +++++++++++++++++++++++++++++
+ drivers/staging/android/logger_interface.h |  15 ++++
+ 4 files changed, 138 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/staging/android/logger_interface.c
+ create mode 100644 drivers/staging/android/logger_interface.h
+
+diff --git a/drivers/staging/android/Makefile b/drivers/staging/android/Makefile
+index 8e057e6..6a23020 100644
+--- a/drivers/staging/android/Makefile
++++ b/drivers/staging/android/Makefile
+@@ -1,5 +1,5 @@
+ obj-$(CONFIG_ANDROID_BINDER_IPC)	+= binder.o
+-obj-$(CONFIG_ANDROID_LOGGER)		+= logger.o
++obj-$(CONFIG_ANDROID_LOGGER)		+= logger.o logger_interface.o
+ obj-$(CONFIG_ANDROID_RAM_CONSOLE)	+= ram_console.o
+ obj-$(CONFIG_ANDROID_TIMED_OUTPUT)	+= timed_output.o
+ obj-$(CONFIG_ANDROID_TIMED_GPIO)	+= timed_gpio.o
+diff --git a/drivers/staging/android/logger.c b/drivers/staging/android/logger.c
+index 284cfdf..a266d3e 100644
+--- a/drivers/staging/android/logger.c
++++ b/drivers/staging/android/logger.c
+@@ -26,6 +26,7 @@
+ #include <linux/slab.h>
+ #include <linux/time.h>
+ #include "logger.h"
++#include "logger_interface.h"
+ 
+ #include <asm/ioctls.h>
+ #include <mach/sec_debug.h>
+@@ -375,6 +376,12 @@ static void do_write_log(struct logger_log *log, const void *buf, size_t count)
+ {
+ 	size_t len;
+ 
++	// if logger mode is disabled, terminate instantly
++	if (logger_mode == 0)
++	{
++			return;
++	} 
++        
+ 	len = min(count, log->size - log->w_off);
+ 	memcpy(log->buffer + log->w_off, buf, len);
+ 
+@@ -398,6 +405,12 @@ static ssize_t do_write_log_from_user(struct logger_log *log,
+ {
+ 	size_t len;
+ 
++	// if logger mode is disabled, terminate instantly
++	if (logger_mode == 0)
++	{
++			return 0;
++	} 
++
+ 	len = min(count, log->size - log->w_off);
+ 	if (len && copy_from_user(log->buffer + log->w_off, buf, len))
+ 		return -EFAULT;
+diff --git a/drivers/staging/android/logger_interface.c b/drivers/staging/android/logger_interface.c
+new file mode 100644
+index 0000000..6ec5f04
+--- /dev/null
++++ b/drivers/staging/android/logger_interface.c
+@@ -0,0 +1,109 @@
++/*
++ * Author: andip71, 21.04.2013
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++
++#include <linux/kobject.h>
++#include <linux/sysfs.h>
++#include "logger_interface.h"
++
++
++int logger_mode;
++
++
++/* sysfs interface for logger mode */
++
++static ssize_t logger_mode_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
++{
++
++	// print current mode
++	if (logger_mode == 0)
++	{
++		return sprintf(buf, "logger mode: %d (disabled)", logger_mode);
++	}
++	else
++	{
++		return sprintf(buf, "logger mode: %d (enabled)", logger_mode);
++	}
++
++}
++
++
++static ssize_t logger_mode_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
++{
++
++	unsigned int ret = -EINVAL;
++	int val;
++
++	// read value from input buffer
++	ret = sscanf(buf, "%d", &val);
++
++	// check value and store if valid
++	if ((val == 0) ||  (val == 1))
++	{
++		logger_mode = val;
++	}
++
++	return count;
++}
++
++
++/* Initialize logger_mode sysfs folder */
++
++static struct kobj_attribute logger_mode_attribute =
++__ATTR(logger_mode, 0666, logger_mode_show, logger_mode_store);
++
++static struct attribute *logger_mode_attrs[] = {
++&logger_mode_attribute.attr,
++NULL,
++};
++
++static struct attribute_group logger_mode_attr_group = {
++.attrs = logger_mode_attrs,
++};
++
++static struct kobject *logger_mode_kobj;
++
++int logger_mode_init(void)
++{
++	int logger_mode_retval;
++
++        logger_mode_kobj = kobject_create_and_add("logger_mode", kernel_kobj);
++
++        if (!logger_mode_kobj) {
++                return -ENOMEM;
++        }
++
++        logger_mode_retval = sysfs_create_group(logger_mode_kobj, &logger_mode_attr_group);
++
++        if (logger_mode_retval)
++	{
++			kobject_put(logger_mode_kobj);
++	}
++
++	// initialize logger mode to 1 (enabled) as default
++	logger_mode = 1;
++
++        return (logger_mode_retval);
++}
++
++
++void logger_mode_exit(void)
++{
++	kobject_put(logger_mode_kobj);
++}
++
++
++/* define driver entry points */
++module_init(logger_mode_init);
++module_exit(logger_mode_exit);
+diff --git a/drivers/staging/android/logger_interface.h b/drivers/staging/android/logger_interface.h
+new file mode 100644
+index 0000000..8239970
+--- /dev/null
++++ b/drivers/staging/android/logger_interface.h
+@@ -0,0 +1,15 @@
++/*
++ * Author: andip71
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++extern int logger_mode;
+-- 
+1.9.1
+

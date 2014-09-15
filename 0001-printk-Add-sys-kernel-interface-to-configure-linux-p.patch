@@ -1,0 +1,208 @@
+From 14e72fa256e7929eccbb3259e4070d75134fc1bb Mon Sep 17 00:00:00 2001
+From: andip71 <andreasp@gmx.de>
+Date: Sat, 17 Nov 2012 17:01:43 +0100
+Subject: [PATCH] printk: Add sys kernel interface to configure linux printk
+ logging
+
+- now logging can be switched on and off via /sys/kernel/printk_mode interface
+- default is 1 (on)
+- Enabled time stamp information in logs again
+---
+ kernel/Makefile           |   2 +-
+ kernel/printk.c           |  13 ++++++
+ kernel/printk_interface.c | 109 ++++++++++++++++++++++++++++++++++++++++++++++
+ kernel/printk_interface.h |  15 +++++++
+ 4 files changed, 138 insertions(+), 1 deletion(-)
+ create mode 100644 kernel/printk_interface.c
+ create mode 100644 kernel/printk_interface.h
+
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 2d64cfc..ec1791a 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -2,7 +2,7 @@
+ # Makefile for the linux kernel.
+ #
+ 
+-obj-y     = sched.o fork.o exec_domain.o panic.o printk.o \
++obj-y     = sched.o fork.o exec_domain.o panic.o printk.o printk_interface.o\
+ 	    cpu.o exit.o itimer.o time.o softirq.o resource.o \
+ 	    sysctl.o sysctl_binary.o capability.o ptrace.o timer.o user.o \
+ 	    signal.o sys.o kmod.o workqueue.o pid.o \
+diff --git a/kernel/printk.c b/kernel/printk.c
+index d614ccd..cf8dc6c 100644
+--- a/kernel/printk.c
++++ b/kernel/printk.c
+@@ -41,6 +41,7 @@
+ #include <linux/cpu.h>
+ #include <linux/notifier.h>
+ #include <linux/rculist.h>
++#include "printk_interface.h"
+ 
+ #include <asm/uaccess.h>
+ #include <mach/sec_debug.h>
+@@ -843,6 +844,12 @@ asmlinkage int printk(const char *fmt, ...)
+ 	va_list args;
+ 	int r;
+ 
++	// if printk mode is disabled, terminate instantly
++	if (printk_mode == 0)
++	{
++		return 0;
++	}
++
+ #ifdef CONFIG_KGDB_KDB
+ 	if (unlikely(kdb_trap_printk)) {
+ 		va_start(args, fmt);
+@@ -938,6 +945,12 @@ asmlinkage int vprintk(const char *fmt, va_list args)
+ 	size_t plen;
+ 	char special;
+ 
++        // if printk mode is disabled, terminate instantly
++        if (printk_mode == 0)
++        {
++                return 0;
++        }
++
+ 	boot_delay_msec();
+ 	printk_delay();
+ 
+diff --git a/kernel/printk_interface.c b/kernel/printk_interface.c
+new file mode 100644
+index 0000000..6006977
+--- /dev/null
++++ b/kernel/printk_interface.c
+@@ -0,0 +1,109 @@
++/*
++ * Author: andip71, 17.11.2012
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++
++#include <linux/kobject.h>
++#include <linux/sysfs.h>
++#include "printk_interface.h"
++
++
++int printk_mode;
++
++
++/* sysfs interface for printk mode */
++
++static ssize_t printk_mode_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
++{
++
++	// print current mode
++	if (printk_mode == 0)
++	{
++		return sprintf(buf, "printk mode: %d (disabled)", printk_mode);
++	}
++	else
++	{
++		return sprintf(buf, "printk mode: %d (enabled)", printk_mode);
++	}
++
++}
++
++
++static ssize_t printk_mode_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
++{
++
++	unsigned int ret = -EINVAL;
++	int val;
++
++	// read value from input buffer
++	ret = sscanf(buf, "%d", &val);
++
++	// check value and store if valid
++	if ((val == 0) ||  (val == 1))
++	{
++		printk_mode = val;
++	}
++
++	return count;
++}
++
++
++/* Initialize printk_mode sysfs folder */
++
++static struct kobj_attribute printk_mode_attribute =
++__ATTR(printk_mode, 0666, printk_mode_show, printk_mode_store);
++
++static struct attribute *printk_mode_attrs[] = {
++&printk_mode_attribute.attr,
++NULL,
++};
++
++static struct attribute_group printk_mode_attr_group = {
++.attrs = printk_mode_attrs,
++};
++
++static struct kobject *printk_mode_kobj;
++
++int printk_mode_init(void)
++{
++	int printk_mode_retval;
++
++        printk_mode_kobj = kobject_create_and_add("printk_mode", kernel_kobj);
++
++        if (!printk_mode_kobj) {
++                return -ENOMEM;
++        }
++
++        printk_mode_retval = sysfs_create_group(printk_mode_kobj, &printk_mode_attr_group);
++
++        if (printk_mode_retval)
++	{
++			kobject_put(printk_mode_kobj);
++	}
++
++	// initialize printk mode to 1 (enabled) as default
++	printk_mode = 1;
++
++        return (printk_mode_retval);
++}
++
++
++void printk_mode_exit(void)
++{
++	kobject_put(printk_mode_kobj);
++}
++
++
++/* define driver entry points */
++module_init(printk_mode_init);
++module_exit(printk_mode_exit);
+diff --git a/kernel/printk_interface.h b/kernel/printk_interface.h
+new file mode 100644
+index 0000000..906510f
+--- /dev/null
++++ b/kernel/printk_interface.h
+@@ -0,0 +1,15 @@
++/*
++ * Author: andip71
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++extern int printk_mode;
+-- 
+1.9.1
+
