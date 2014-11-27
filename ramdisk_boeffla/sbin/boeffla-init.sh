@@ -73,22 +73,6 @@
 		fi
 	fi
 
-# Install busybox applet symlinks to /system/xbin if enabled,
-# otherwise only install mount/umount/top symlinks
-	mount -o remount,rw -t ext4 $SYSTEM_DEVICE /system
-	if [ -f $BUSYBOX_ENABLER ]; then
-		/sbin/busybox --install -s /system/xbin
-		echo $(date) "Busybox applet symlinks installed to /system/xbin" >> $BOEFFLA_LOGFILE
-	else
-		/sbin/busybox ln -s /sbin/busybox /system/xbin/mount
-		/sbin/busybox ln -s /sbin/busybox /system/xbin/umount
-		/sbin/busybox ln -s /sbin/busybox /system/xbin/top
-		echo $(date) "Mount/umount/top applet symlinks installed to /system/xbin" >> $BOEFFLA_LOGFILE
-	
-	fi
-	/sbin/busybox sync
-	mount -o remount,ro -t ext4 $SYSTEM_DEVICE /system
-		
 # Correct /sbin and /res directory and file permissions
 	mount -o remount,rw rootfs /
 
@@ -102,6 +86,9 @@
 # remove any obsolete Boeffla-Config V2 startconfig done file
 	/sbin/busybox rm -f $BOEFFLA_STARTCONFIG_DONE
 
+# remove not used configuration files for frandom and busybox
+	/sbin/busybox rm -f $BUSYBOX_ENABLER
+	
 # Custom boot animation support
 	# Implementation 1
 	#if [ -f /data/local/bootanimation.zip ] || [ -f /system/media/bootanimation.zip ]; then
