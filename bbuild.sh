@@ -13,7 +13,7 @@
 BOEFFLA_VERSION="2.8-Omnirom-NG-i9300"
 EXTENDED_CMDLINE=""
 
-TOOLCHAIN="/opt/toolchains/arm-eabi-4.8/bin/arm-eabi-"
+TOOLCHAIN="/opt/toolchains/arm-eabi-4.7/bin/arm-eabi-"
 
 COMPILE_DTB="n"
 MODULES_IN_SYSTEM="y"
