@@ -195,7 +195,7 @@ export KBUILD_BUILDHOST := $(SUBARCH)
 ARCH		?= arm
 # CROSS_COMPILE	?= /opt/toolchains/arm-eabi-4.4.3/bin/arm-eabi-
 # CROSS_COMPILE	?= /opt/toolchains/arm-linux-androideabi-4.6/prebuilt/linux-x86/bin/arm-linux-androideabi-
-CROSS_COMPILE	?= /opt/toolchains/arm-eabi-4.7/bin/arm-eabi-
+CROSS_COMPILE	?= ${CCACHE} /opt/toolchains/arm-eabi-4.7/bin/arm-eabi-
 # CROSS_COMPILE	?= /opt/toolchains/linaro-eabi-4.7-2013.02/bin/arm-eabi-
 
 # Architecture as present in compile.h
